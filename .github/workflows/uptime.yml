@@ -1,0 +1,142 @@
+name: Uptime
+
+# Checks the public iBall surfaces every 10 minutes and opens a GitHub issue the moment
+# one stops answering.
+#
+# Why this repo is PUBLIC, and why it holds nothing else: Actions minutes are unlimited
+# and free on public repositories, metered on private ones. A 10-minute cron is ~4,300
+# runs a month, which in a private repo would consume roughly twice the org's entire
+# 2,000-minute Free allowance — and this monitoring system is supposed to cost nothing.
+# So the checker lives on its own, in the open, holding no source, no secrets, and no
+# configuration that is not already public: the URLs it polls are the ones anyone can
+# type into a browser.
+#
+# The Sentinel cannot do this job. Its cloud sandbox routes egress through a policy proxy
+# that 403s iball.app and api.iball.app, so its health checks are permanently UNKNOWN. It
+# reports that honestly rather than guessing, which is correct and useless. This workflow
+# is the eyes it does not have.
+
+on:
+  schedule:
+    # Offset off the hour: :00 is the busiest minute on the platform and scheduled jobs
+    # are queued rather than guaranteed, so an offset schedule is delayed less often.
+    - cron: '3,13,23,33,43,53 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # for the monthly heartbeat commit; see keepalive below
+  issues: write
+
+concurrency:
+  group: uptime
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Probe the public surfaces
+        id: probe
+        run: |
+          set -uo pipefail
+          # readiness, not liveness: liveness only proves the process is running, which
+          # Railway already restarts on. readiness proves it can reach the database — the
+          # failure a player actually feels.
+          #
+          # Both the prefix (api) and the version (v1) are required; plain /health is a
+          # 404 on a perfectly healthy backend, so monitoring it would report a permanent
+          # outage that does not exist.
+          #
+          # app.iball.app is deliberately absent: no DNS record, documented as dead. A
+          # board that is always red is a board nobody reads.
+          urls="https://iball.app https://www.iball.app https://api.iball.app/api/v1/health/readiness"
+          : > /tmp/down.txt
+          for u in $urls; do
+            code=000
+            # Three attempts before calling it down. One failed request is usually the
+            # runner's network or a cold start, and paging on a single blip is how an
+            # alarm earns itself an inbox filter.
+            for attempt in 1 2 3; do
+              code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -L "$u" 2>/dev/null) || code=000
+              [ "$code" = "200" ] && break
+              sleep 5
+            done
+            if [ "$code" = "200" ]; then
+              echo "ok   $u"
+            else
+              echo "DOWN $u (last response: $code)"
+              echo "$u -> HTTP $code" >> /tmp/down.txt
+            fi
+          done
+          if [ -s /tmp/down.txt ]; then
+            echo "status=down" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=up" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Raise or update the outage issue
+        if: steps.probe.outputs.status == 'down'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          {
+            echo "A public surface stopped answering."
+            echo
+            echo '```'
+            cat /tmp/down.txt
+            echo '```'
+            echo
+            echo "Checked three times, five seconds apart, before reporting."
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo
+            echo "What to do: \`iball-ops/RUNBOOK.md\`, section \"A public surface is down\"."
+            echo "Short version: Railway ▸ the failing service ▸ Deployments. If the newest"
+            echo "deploy crashed, roll back from that screen rather than debugging forward."
+            echo
+            echo "This issue closes itself on the next fully successful check."
+          } > /tmp/body.md
+
+          # One open issue per outage, not one per probe — a 10-minute cron would
+          # otherwise file 144 issues a day and the alarm would be worse than the outage.
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --label outage --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body-file /tmp/body.md
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "Outage: an iBall surface is not answering" \
+              --label outage --body-file /tmp/body.md
+          fi
+
+      - name: Close the outage issue once everything answers again
+        if: steps.probe.outputs.status == 'up'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          for n in $(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label outage \
+                       --json number --jq '.[].number'); do
+            gh issue close "$n" --repo "$GITHUB_REPOSITORY" \
+              --comment "Recovered — every surface answered 200 at $(date -u +%Y-%m-%dT%H:%M:%SZ)."
+          done
+
+      # GitHub disables scheduled workflows after 60 days with no repository activity, and
+      # workflow runs do not count as activity — only commits do. This repo has no other
+      # reason to ever receive one, so without a heartbeat the monitor would switch itself
+      # off two months from now and the silence would look exactly like good news.
+      - name: Monthly keepalive commit
+        if: steps.probe.outputs.status == 'up' && github.event_name == 'schedule'
+        run: |
+          set -uo pipefail
+          stamp=$(date -u +%Y-%m)
+          [ "$(cat .heartbeat 2>/dev/null)" = "$stamp" ] && exit 0
+          echo "$stamp" > .heartbeat
+          git config user.name  "iBall Uptime"
+          git config user.email "info@iball.app"
+          git add .heartbeat
+          git commit -q -m "chore: keepalive $stamp (stops GitHub disabling the schedule)"
+          git push -q
