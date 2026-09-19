@@ -1,6 +1,6 @@
 # iBall status
 
-Uptime monitoring for the public iBall surfaces. This repository contains one workflow
+The free backstop for uptime on the public iBall surfaces. This repository contains one workflow
 and nothing else — no source, no secrets, no configuration that is not already public.
 
 It is deliberately **public**. GitHub Actions minutes are unlimited on public
@@ -21,6 +21,33 @@ the URLs anyone can type into a browser.
 `app.iball.app` is not watched: it has no DNS record and is documented as dead. Watching
 a host you know is absent produces a permanently red board, and a board that is always
 red is a board nobody reads.
+
+## How often this actually runs
+
+The workflow asks for a check every ten minutes. GitHub does not honour that. Scheduled
+workflows are best-effort and are throttled hard on repositories with little activity,
+and measured over 18-20 Sep 2026 this one actually fired **every two to five hours**:
+
+    21:00  18:39  16:21  12:59  08:56  04:30  00:02   (19 Sep, UTC)
+
+So the worst case here is not ten minutes of unnoticed downtime. It is closer to five
+hours — which is the same order as the nine-hour scheduler outage on 15 Sep that nobody
+was told about. This repository is worth keeping because it costs nothing and needs no
+account, but it must not be the only thing watching.
+
+## The alarm that actually pages: HetrixTools
+
+Minute-by-minute checks run on [HetrixTools](https://hetrixtools.com), free tier: 15
+monitors, one-minute frequency, several countries, alerts to email and phone. The three
+monitors are created by [`setup-hetrix.sh`](setup-hetrix.sh), which holds no secret — the
+API key is read from the environment:
+
+    HETRIX_TOKEN=xxxx ./setup-hetrix.sh
+
+It sets a 15-second timeout on the web hosts, because a cold start on `iball.app` has
+been measured at 14.4 seconds and a shorter timeout would invent an outage that never
+happened. The API monitor additionally requires the string `"status":"ok"` in the body,
+so a cached or proxied 200 with a dead database still reads as down.
 
 ## What happens when something breaks
 
