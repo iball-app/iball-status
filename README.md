@@ -37,12 +37,24 @@ account, but it must not be the only thing watching.
 
 ## The alarm that actually pages: HetrixTools
 
-Minute-by-minute checks run on [HetrixTools](https://hetrixtools.com), free tier: 15
-monitors, one-minute frequency, several countries, alerts to email and phone. The three
-monitors are created by [`setup-hetrix.sh`](setup-hetrix.sh), which holds no secret — the
-API key is read from the environment:
+**Live since 20 Sep 2026.** Three monitors on [HetrixTools](https://hetrixtools.com),
+free tier: checked every minute from New York, Amsterdam, London and Frankfurt, alerting
+to `info@iball.app`.
+
+| Monitor | Target |
+|---|---|
+| iBall web - apex | `iball.app` |
+| iBall web - www | `www.iball.app` |
+| iBall API readiness | `api.iball.app/api/v1/health/readiness` |
+
+They are created by [`setup-hetrix.sh`](setup-hetrix.sh), which holds no secret — the API
+key is read from the environment, and the contact list is discovered automatically:
 
     HETRIX_TOKEN=xxxx ./setup-hetrix.sh
+
+**The alarm has been tested, not assumed.** A throwaway monitor was pointed at a hostname
+with no DNS record, confirmed to flip to Offline, and deleted. An untested alarm is a
+guess about the future.
 
 It sets a 15-second timeout on the web hosts, because a cold start on `iball.app` has
 been measured at 14.4 seconds and a shorter timeout would invent an outage that never
