@@ -14,8 +14,31 @@
 set -euo pipefail
 
 : "${HETRIX_TOKEN:?set HETRIX_TOKEN to your HetrixTools API key}"
-CONTACT_LIST="${HETRIX_CONTACT_LIST:-}"
 API="https://api.hetrixtools.com/v2/${HETRIX_TOKEN}/uptime/add/"
+
+# The contact list is who gets woken up. A monitor without one is a monitor that
+# watches in silence, so this refuses to run rather than create three of those.
+#
+# The endpoint below is not in HetrixTools' published docs — it was found by probing.
+# Note the shape: v1 puts the token FIRST (v1/<TOKEN>/contacts/), which is the opposite
+# of what the v1 examples elsewhere in their docs suggest. Every other ordering returns
+# a cheerful HTTP 200 carrying {"status":"ERROR","error_message":"Invalid API Call"},
+# so a script that only checks the HTTP code will think it succeeded.
+CONTACT_LIST="${HETRIX_CONTACT_LIST:-}"
+if [ -z "$CONTACT_LIST" ]; then
+  CONTACT_LIST=$(curl -sS --max-time 20 \
+    "https://api.hetrixtools.com/v1/${HETRIX_TOKEN}/contacts/" \
+    | python3 -c 'import json,sys
+lists = json.load(sys.stdin)
+if not isinstance(lists, list) or not lists:
+    sys.exit(1)
+print(lists[0]["ID"])' 2>/dev/null) || {
+      echo "Could not read a contact list from HetrixTools." >&2
+      echo "Create one in the dashboard under Contact Lists, then run this again." >&2
+      exit 1
+    }
+  echo "using contact list: $CONTACT_LIST"
+fi
 
 # Four checkpoints, weighted towards the routes African traffic actually takes to
 # these hosts. A monitor that only watches from one continent reports the network
